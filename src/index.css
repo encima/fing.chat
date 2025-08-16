@@ -2,13 +2,11 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Definition of the design system. All colors, gradients, fonts, etc should be defined here. 
-All colors MUST be HSL.
-*/
+/* Globe Chat Design System - International Communication */
 
 @layer base {
   :root {
-    --background: 0 0% 100%;
+    --background: 220 25% 98%;
     --foreground: 222.2 84% 4.9%;
 
     --card: 0 0% 100%;
@@ -17,26 +15,52 @@ All colors MUST be HSL.
     --popover: 0 0% 100%;
     --popover-foreground: 222.2 84% 4.9%;
 
-    --primary: 222.2 47.4% 11.2%;
-    --primary-foreground: 210 40% 98%;
+    /* International Communication Theme */
+    --primary: 220 91% 54%;
+    --primary-foreground: 0 0% 98%;
+    --primary-glow: 220 91% 64%;
+    
+    --secondary: 280 67% 58%;
+    --secondary-foreground: 0 0% 98%;
+    
+    --accent: 340 82% 62%;
+    --accent-foreground: 0 0% 98%;
 
-    --secondary: 210 40% 96.1%;
-    --secondary-foreground: 222.2 47.4% 11.2%;
-
-    --muted: 210 40% 96.1%;
+    --muted: 220 15% 96%;
     --muted-foreground: 215.4 16.3% 46.9%;
-
-    --accent: 210 40% 96.1%;
-    --accent-foreground: 222.2 47.4% 11.2%;
 
     --destructive: 0 84.2% 60.2%;
     --destructive-foreground: 210 40% 98%;
 
-    --border: 214.3 31.8% 91.4%;
-    --input: 214.3 31.8% 91.4%;
-    --ring: 222.2 84% 4.9%;
+    --border: 220 15% 91%;
+    --input: 220 15% 94%;
+    --ring: 220 91% 54%;
 
-    --radius: 0.5rem;
+    --radius: 1rem;
+
+    /* Chat-specific colors */
+    --message-sent: 220 91% 54%;
+    --message-sent-foreground: 0 0% 98%;
+    --message-received: 0 0% 100%;
+    --message-received-foreground: 222.2 84% 4.9%;
+    --message-translation: 280 40% 97%;
+    --message-translation-foreground: 280 30% 35%;
+
+    /* Gradients */
+    --gradient-primary: linear-gradient(135deg, hsl(220 91% 54%), hsl(280 67% 58%));
+    --gradient-background: linear-gradient(180deg, hsl(220 25% 98%), hsl(220 15% 95%));
+    --gradient-chat: linear-gradient(to bottom, hsl(220 25% 98%), hsl(220 20% 96%));
+    --gradient-glow: 0 0 40px hsl(220 91% 54% / 0.2);
+
+    /* Shadows */
+    --shadow-message: 0 1px 3px hsl(220 15% 85% / 0.3);
+    --shadow-elegant: 0 10px 30px -10px hsl(220 91% 54% / 0.2);
+    --shadow-glow: 0 0 20px hsl(220 91% 54% / 0.3);
+
+    /* Animations */
+    --transition-smooth: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    --animation-slide-up: slideUp 0.3s ease-out;
+    --animation-fade-in: fadeIn 0.2s ease-out;
 
     --sidebar-background: 0 0% 98%;
 
@@ -101,5 +125,68 @@ All colors MUST be HSL.
 
   body {
     @apply bg-background text-foreground;
+    background: var(--gradient-background);
+    min-height: 100vh;
+  }
+}
+
+@layer components {
+  /* Chat Animations */
+  @keyframes slideUp {
+    from {
+      opacity: 0;
+      transform: translateY(20px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  @keyframes fadeIn {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+
+  @keyframes pulse-glow {
+    0%, 100% {
+      box-shadow: var(--shadow-elegant);
+    }
+    50% {
+      box-shadow: var(--shadow-glow);
+    }
+  }
+
+  /* Chat specific utilities */
+  .gradient-primary {
+    background: var(--gradient-primary);
+  }
+
+  .gradient-chat {
+    background: var(--gradient-chat);
+  }
+
+  .animate-slide-up {
+    animation: var(--animation-slide-up);
+  }
+
+  .animate-fade-in {
+    animation: var(--animation-fade-in);
+  }
+
+  .animate-pulse-glow {
+    animation: pulse-glow 2s ease-in-out infinite;
+  }
+
+  .message-shadow {
+    box-shadow: var(--shadow-message);
+  }
+
+  .transition-smooth {
+    transition: var(--transition-smooth);
   }
 }
