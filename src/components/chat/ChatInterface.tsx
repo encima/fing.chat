@@ -6,8 +6,9 @@ import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { useToast } from "@/hooks/use-toast";
-import { Send, Languages, LogOut, Settings } from "lucide-react";
+import { Send, Languages, LogOut, Settings, UserPlus } from "lucide-react";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import AuthModal from "@/components/auth/AuthModal";
 
 interface Message {
   id: string;
@@ -46,13 +47,14 @@ const LANGUAGES = {
 };
 
 const ChatInterface = () => {
-  const { user } = useAuth();
+  const { user, signOut } = useAuth();
   const { toast } = useToast();
   const [messages, setMessages] = useState<Message[]>([]);
   const [newMessage, setNewMessage] = useState("");
   const [loading, setLoading] = useState(false);
   const [profile, setProfile] = useState<Profile | null>(null);
   const [showSettings, setShowSettings] = useState(false);
+  const [showAuthModal, setShowAuthModal] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const scrollToBottom = () => {
@@ -90,7 +92,7 @@ const ChatInterface = () => {
             display_name: user.email?.split("@")[0] || "Anonymous",
             native_language: "en",
             target_language: "es",
-            is_anonymous: false
+            is_anonymous: user.is_anonymous || false
           })
           .select()
           .single();
@@ -274,7 +276,7 @@ const ChatInterface = () => {
   };
 
   const handleSignOut = async () => {
-    await supabase.auth.signOut();
+    await signOut();
   };
 
   const handleKeyPress = (e: React.KeyboardEvent) => {
@@ -305,6 +307,17 @@ const ChatInterface = () => {
             <h1 className="text-xl font-bold">Globe Chat</h1>
           </div>
           <div className="flex items-center space-x-2">
+            {user?.is_anonymous && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setShowAuthModal(true)}
+                className="text-accent hover:text-accent-foreground"
+              >
+                <UserPlus className="w-4 h-4 mr-1" />
+                Sign Up
+              </Button>
+            )}
             <Button
               variant="ghost"
               size="sm"
@@ -312,9 +325,11 @@ const ChatInterface = () => {
             >
               <Settings className="w-4 h-4" />
             </Button>
-            <Button variant="ghost" size="sm" onClick={handleSignOut}>
-              <LogOut className="w-4 h-4" />
-            </Button>
+            {!user?.is_anonymous && (
+              <Button variant="ghost" size="sm" onClick={handleSignOut}>
+                <LogOut className="w-4 h-4" />
+              </Button>
+            )}
           </div>
         </div>
       </div>
@@ -436,6 +451,11 @@ const ChatInterface = () => {
           )}
         </div>
       </div>
+
+      <AuthModal 
+        isOpen={showAuthModal} 
+        onClose={() => setShowAuthModal(false)} 
+      />
     </div>
   );
 };

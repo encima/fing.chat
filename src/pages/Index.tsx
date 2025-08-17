@@ -1,9 +1,8 @@
 import { useAuth } from "@/hooks/useAuth";
-import AuthPage from "@/components/auth/AuthPage";
 import ChatInterface from "@/components/chat/ChatInterface";
 
 const Index = () => {
-  const { user, loading } = useAuth();
+  const { loading } = useAuth();
 
   if (loading) {
     return (
@@ -16,7 +15,7 @@ const Index = () => {
     );
   }
 
-  return user ? <ChatInterface /> : <AuthPage />;
+  return <ChatInterface />;
 };
 
 export default Index;
