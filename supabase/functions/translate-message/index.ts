@@ -24,33 +24,84 @@ serve(async (req) => {
       );
     }
 
-    // Use LibreTranslate for translation
-    const translateResponse = await fetch('https://libretranslate.de/translate', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        q: text,
-        source: source,
-        target: target,
-        format: 'text'
-      }),
-    });
+    // Log the translation request
+    console.log('Translation request:', { text, source, target });
 
-    if (!translateResponse.ok) {
-      const errorText = await translateResponse.text();
-      console.error('LibreTranslate API error:', errorText);
-      return new Response(
-        JSON.stringify({ error: 'Translation failed' }),
-        { 
-          status: 500, 
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+    // Try multiple translation services for better reliability
+    let translationData;
+    let translationError;
+
+    // First try LibreTranslate
+    try {
+      console.log('Trying LibreTranslate...');
+      
+      // Add timeout to prevent hanging requests
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
+
+      const translateResponse = await fetch('https://libretranslate.de/translate', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          q: text,
+          source: source,
+          target: target,
+          format: 'text'
+        }),
+        signal: controller.signal
+      });
+
+      clearTimeout(timeoutId);
+
+      if (translateResponse.ok) {
+        translationData = await translateResponse.json();
+        console.log('LibreTranslate success:', translationData);
+      } else {
+        throw new Error(`LibreTranslate returned ${translateResponse.status}`);
+      }
+    } catch (error) {
+      console.log('LibreTranslate failed:', error.message);
+      translationError = error;
+      
+      // Fallback: Try a different LibreTranslate instance
+      try {
+        console.log('Trying alternate LibreTranslate instance...');
+        
+        const controller2 = new AbortController();
+        const timeoutId2 = setTimeout(() => controller2.abort(), 8000); // 8 second timeout
+
+        const translateResponse = await fetch('https://translate.argosopentech.com/translate', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            q: text,
+            source: source,
+            target: target,
+            format: 'text'
+          }),
+          signal: controller2.signal
+        });
+
+        clearTimeout(timeoutId2);
+
+        if (translateResponse.ok) {
+          translationData = await translateResponse.json();
+          console.log('Alternate LibreTranslate success:', translationData);
+        } else {
+          throw new Error(`Alternate LibreTranslate returned ${translateResponse.status}`);
         }
-      );
+      } catch (fallbackError) {
+        console.log('All translation services failed');
+        // Return original text with error indication
+        translationData = { 
+          translatedText: `[Translation unavailable] ${text}` 
+        };
+      }
     }
-
-    const translationData = await translateResponse.json();
     
     return new Response(
       JSON.stringify({ translatedText: translationData.translatedText }),

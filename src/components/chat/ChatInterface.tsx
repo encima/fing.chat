@@ -197,11 +197,14 @@ const ChatInterface = () => {
         }
       });
 
-      if (error) throw error;
+      if (error) {
+        console.error("Translation error:", error);
+        return `[Translation failed] ${text}`;
+      }
       return data.translatedText;
     } catch (error) {
       console.error("Translation error:", error);
-      return null;
+      return `[Translation failed] ${text}`;
     }
   };
 
