@@ -213,11 +213,13 @@ const ChatInterface = () => {
       // Translate if needed
       let translatedText = null;
       if (profile.native_language !== profile.target_language) {
+        console.log("Translating message from", profile.native_language, "to", profile.target_language);
         translatedText = await translateMessage(
           newMessage, 
           profile.native_language, 
           profile.target_language
         );
+        console.log("Translation result:", translatedText);
       }
 
       const { error } = await supabase
