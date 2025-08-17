@@ -43,7 +43,8 @@ const LANGUAGES = {
   ko: "Korean",
   zh: "Chinese",
   ar: "Arabic",
-  hi: "Hindi"
+  hi: "Hindi",
+  fi: "Finnish"
 };
 
 const ChatInterface = () => {
