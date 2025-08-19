@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { useToast } from "@/hooks/use-toast";
-import { Send, Languages, LogOut, Settings, UserPlus, Reply } from "lucide-react";
+import { Send, Languages, LogOut, Settings, UserPlus, Reply, Mic, MicOff } from "lucide-react";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import AuthModal from "@/components/auth/AuthModal";
 import RoomSelector from "./RoomSelector";
@@ -47,13 +47,6 @@ const LANGUAGES = {
   fr: "French",
   de: "German",
   it: "Italian",
-  pt: "Portuguese",
-  ru: "Russian",
-  ja: "Japanese",
-  ko: "Korean",
-  zh: "Chinese",
-  ar: "Arabic",
-  hi: "Hindi",
   fi: "Finnish"
 };
 
@@ -69,6 +62,16 @@ const ChatInterface = () => {
   const [selectedRoomId, setSelectedRoomId] = useState<string>("");
   const [replyingTo, setReplyingTo] = useState<Message | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  // Speech recognition
+  const [isListening, setIsListening] = useState(false);
+  const [hasSpeechSupport, setHasSpeechSupport] = useState(false);
+  const recognitionRef = useRef<any | null>(null);
+  const baseTextRef = useRef<string>("");
+  const accumulatedFinalRef = useRef<string>("");
+  const finalTranscriptRef = useRef<string>("");
+  const lastFinalIndexRef = useRef<number>(-1);
+  const [micPermission, setMicPermission] = useState<"unknown" | "granted" | "denied">("unknown");
+  const [requestingMic, setRequestingMic] = useState(false);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -88,6 +91,49 @@ const ChatInterface = () => {
     }
   }, [user, selectedRoomId]);
 
+  // Detect SpeechRecognition support once
+  useEffect(() => {
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (SpeechRecognition) {
+      setHasSpeechSupport(true);
+    } else {
+      setHasSpeechSupport(false);
+    }
+    // Try to detect current microphone permission if supported
+    try {
+      const navAny = navigator as any;
+      if (navAny?.permissions?.query) {
+        navAny.permissions
+          .query({ name: "microphone" as any })
+          .then((status: any) => {
+            if (status?.state === "granted") setMicPermission("granted");
+            else if (status?.state === "denied") setMicPermission("denied");
+            else setMicPermission("unknown");
+            if (status?.onchange !== undefined) {
+              status.onchange = () => {
+                const s = status.state;
+                setMicPermission(s === "granted" ? "granted" : s === "denied" ? "denied" : "unknown");
+              };
+            }
+          })
+          .catch(() => {});
+      }
+    } catch {}
+    return () => {
+      // Cleanup: stop recognition if active
+      try {
+        recognitionRef.current?.stop?.();
+      } catch {}
+    };
+  }, []);
+
+  // Keep base text in sync only when NOT listening to avoid re-appending
+  useEffect(() => {
+    if (!isListening) {
+      baseTextRef.current = newMessage;
+    }
+  }, [newMessage, isListening]);
+
   const fetchProfile = async () => {
     if (!user) return;
 
@@ -106,7 +152,7 @@ const ChatInterface = () => {
             user_id: user.id,
             display_name: user.email?.split("@")[0] || "Anonymous",
             native_language: "en",
-            target_language: "es",
+            target_language: "fi",
             is_anonymous: user.is_anonymous || false
           })
           .select()
@@ -255,6 +301,141 @@ const ChatInterface = () => {
     };
   };
 
+  // Map app language codes to BCP-47 for SpeechRecognition
+  const SPEECH_LANGS: Record<string, string> = {
+    en: "en-US",
+    es: "es-ES",
+    fr: "fr-FR",
+    de: "de-DE",
+    it: "it-IT",
+    fi: "fi-FI",
+  };
+
+  const ensureMicPermission = async (): Promise<boolean> => {
+    if (micPermission === "granted") return true;
+    if (!navigator?.mediaDevices?.getUserMedia) return true; // fallback; some browsers prompt on start
+    try {
+      setRequestingMic(true);
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      // Immediately stop tracks; we only needed permission
+      stream.getTracks().forEach((t) => t.stop());
+      setMicPermission("granted");
+      return true;
+    } catch (e) {
+      setMicPermission("denied");
+      toast({
+        title: "Microphone blocked",
+        description: "Please allow microphone access in your browser settings to use voice input.",
+        variant: "destructive",
+      });
+      return false;
+    } finally {
+      setRequestingMic(false);
+    }
+  };
+
+  const startVoiceInput = async () => {
+    if (!hasSpeechSupport || isListening) return;
+    const permitted = await ensureMicPermission();
+    if (!permitted) return;
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognition) return;
+
+    const recognition = new SpeechRecognition();
+    recognitionRef.current = recognition;
+    recognition.continuous = true;
+    recognition.interimResults = true;
+    recognition.maxAlternatives = 1;
+    const langCode = profile?.native_language ?? "en";
+    recognition.lang = SPEECH_LANGS[langCode] || langCode;
+
+    // Snapshot current text so interim results append during this session
+    baseTextRef.current = newMessage;
+    accumulatedFinalRef.current = "";
+    finalTranscriptRef.current = "";
+    lastFinalIndexRef.current = -1;
+
+    recognition.onresult = (event: any) => {
+      let interim = "";
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        const res = event.results[i];
+        const text = (res[0]?.transcript || "").trim();
+        if (!text) continue;
+        if (res.isFinal) {
+          finalTranscriptRef.current = [finalTranscriptRef.current, text]
+            .filter(Boolean)
+            .join(" ");
+        } else {
+          interim = text; // show only the most recent interim chunk
+        }
+      }
+      const combined = [baseTextRef.current, finalTranscriptRef.current, interim]
+        .filter(Boolean)
+        .join(" ")
+        .trim();
+      setNewMessage(combined);
+    };
+
+    recognition.onerror = (e: any) => {
+      console.error("Speech recognition error", e);
+      const code = e?.error as string | undefined;
+      let description = "Recognition failed.";
+      switch (code) {
+        case "network":
+          description = "Network error. Ensure you are online and that extensions (ad-block/VPN/firewall) aren’t blocking speech services. Try again.";
+          break;
+        case "not-allowed":
+        case "service-not-allowed":
+          description = "Microphone access is blocked. Allow mic permissions in the browser for this site and retry.";
+          break;
+        case "no-speech":
+          description = "No speech detected. Try speaking again.";
+          break;
+        case "audio-capture":
+          description = "No microphone found or it’s in use by another app.";
+          break;
+        case "aborted":
+          description = "Recognition aborted.";
+          break;
+        default:
+          description = code ? `Error: ${code}` : description;
+      }
+      toast({
+        title: "Voice input error",
+        description,
+        variant: "destructive",
+      });
+      setIsListening(false);
+    };
+
+    recognition.onend = () => {
+      setIsListening(false);
+      // persist whatever is currently in the input; user can edit
+    };
+
+    try {
+      recognition.start();
+      setIsListening(true);
+    } catch (err) {
+      console.error("Failed to start recognition", err);
+    }
+  };
+
+  const stopVoiceInput = () => {
+    try {
+      recognitionRef.current?.stop?.();
+    } catch {}
+    setIsListening(false);
+  };
+
+  const toggleVoiceInput = async () => {
+    if (isListening) {
+      stopVoiceInput();
+    } else {
+      await startVoiceInput();
+    }
+  };
+
   const translateMessage = async (text: string, sourceLang: string, targetLang: string) => {
     try {
       const { data, error } = await supabase.functions.invoke('translate-message', {
@@ -281,6 +462,10 @@ const ChatInterface = () => {
 
     setLoading(true);
     try {
+      // If recording, stop so the text doesn't change mid-send
+      if (isListening) {
+        stopVoiceInput();
+      }
       // Translate if needed
       let translatedText = null;
       if (profile.native_language !== profile.target_language) {
@@ -573,6 +758,19 @@ const ChatInterface = () => {
                   onKeyPress={handleKeyPress}
                   disabled={loading || !selectedRoomId}
                 />
+                {hasSpeechSupport && (
+                  <Button
+                    type="button"
+                    variant={isListening ? "secondary" : "outline"}
+                    onClick={toggleVoiceInput}
+                    disabled={loading || !selectedRoomId}
+                    aria-pressed={isListening}
+                    title={isListening ? "Stop voice input" : "Start voice input"}
+                  
+                  >
+                    {isListening ? <MicOff className="w-4 h-4 text-red-500" /> : <Mic className="w-4 h-4" />}
+                  </Button>
+                )}
                 <Button 
                   onClick={sendMessage} 
                   disabled={loading || !newMessage.trim() || !selectedRoomId}
