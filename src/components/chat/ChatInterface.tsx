@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from "react";
+import { STTStreamer } from "@/integrations/stt/client";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/hooks/useAuth";
 import { Button } from "@/components/ui/button";
@@ -62,10 +63,10 @@ const ChatInterface = () => {
   const [selectedRoomId, setSelectedRoomId] = useState<string>("");
   const [replyingTo, setReplyingTo] = useState<Message | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  // Speech recognition
+  // Mic streaming via WebSocket STT server
   const [isListening, setIsListening] = useState(false);
   const [hasSpeechSupport, setHasSpeechSupport] = useState(false);
-  const recognitionRef = useRef<any | null>(null);
+  const sttRef = useRef<STTStreamer | null>(null);
   const baseTextRef = useRef<string>("");
   const accumulatedFinalRef = useRef<string>("");
   const finalTranscriptRef = useRef<string>("");
@@ -91,14 +92,10 @@ const ChatInterface = () => {
     }
   }, [user, selectedRoomId]);
 
-  // Detect SpeechRecognition support once
+  // Detect microphone support and permission once
   useEffect(() => {
-    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (SpeechRecognition) {
-      setHasSpeechSupport(true);
-    } else {
-      setHasSpeechSupport(false);
-    }
+    const mediaSupported = !!navigator?.mediaDevices?.getUserMedia;
+    setHasSpeechSupport(mediaSupported);
     // Try to detect current microphone permission if supported
     try {
       const navAny = navigator as any;
@@ -120,9 +117,9 @@ const ChatInterface = () => {
       }
     } catch {}
     return () => {
-      // Cleanup: stop recognition if active
+      // Cleanup: stop streamer if active
       try {
-        recognitionRef.current?.stop?.();
+        sttRef.current?.stop();
       } catch {}
     };
   }, []);
@@ -335,19 +332,9 @@ const ChatInterface = () => {
   };
 
   const startVoiceInput = async () => {
-    if (!hasSpeechSupport || isListening) return;
+    if (isListening) return;
     const permitted = await ensureMicPermission();
     if (!permitted) return;
-    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (!SpeechRecognition) return;
-
-    const recognition = new SpeechRecognition();
-    recognitionRef.current = recognition;
-    recognition.continuous = true;
-    recognition.interimResults = true;
-    recognition.maxAlternatives = 1;
-    const langCode = profile?.native_language ?? "en";
-    recognition.lang = SPEECH_LANGS[langCode] || langCode;
 
     // Snapshot current text so interim results append during this session
     baseTextRef.current = newMessage;
@@ -355,75 +342,71 @@ const ChatInterface = () => {
     finalTranscriptRef.current = "";
     lastFinalIndexRef.current = -1;
 
-    recognition.onresult = (event: any) => {
-      let interim = "";
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        const res = event.results[i];
-        const text = (res[0]?.transcript || "").trim();
-        if (!text) continue;
-        if (res.isFinal) {
-          finalTranscriptRef.current = [finalTranscriptRef.current, text]
-            .filter(Boolean)
-            .join(" ");
-        } else {
-          interim = text; // show only the most recent interim chunk
-        }
-      }
-      const combined = [baseTextRef.current, finalTranscriptRef.current, interim]
+    const wsUrl = (import.meta as any).env?.VITE_STT_WS_URL || "ws://localhost:8001/ws";
+    const stt = new STTStreamer(wsUrl);
+    sttRef.current = stt;
+
+    stt.onReady = (info) => {
+      console.log("[STT ready]", info);
+    };
+    stt.onPartial = (t) => {
+      console.log("[STT partial]", t);
+      const combined = [baseTextRef.current, finalTranscriptRef.current, t]
         .filter(Boolean)
         .join(" ")
         .trim();
       setNewMessage(combined);
     };
-
-    recognition.onerror = (e: any) => {
-      console.error("Speech recognition error", e);
-      const code = e?.error as string | undefined;
-      let description = "Recognition failed.";
-      switch (code) {
-        case "network":
-          description = "Network error. Ensure you are online and that extensions (ad-block/VPN/firewall) aren’t blocking speech services. Try again.";
-          break;
-        case "not-allowed":
-        case "service-not-allowed":
-          description = "Microphone access is blocked. Allow mic permissions in the browser for this site and retry.";
-          break;
-        case "no-speech":
-          description = "No speech detected. Try speaking again.";
-          break;
-        case "audio-capture":
-          description = "No microphone found or it’s in use by another app.";
-          break;
-        case "aborted":
-          description = "Recognition aborted.";
-          break;
-        default:
-          description = code ? `Error: ${code}` : description;
+    stt.onResult = (t) => {
+      console.log("[STT result]", t);
+      if (t) {
+        finalTranscriptRef.current = [finalTranscriptRef.current, t].filter(Boolean).join(" ");
+        const combined = [baseTextRef.current, finalTranscriptRef.current]
+          .filter(Boolean)
+          .join(" ")
+          .trim();
+        setNewMessage(combined);
       }
+    };
+    stt.onFinal = (t) => {
+      console.log("[STT final]", t);
+      if (t) {
+        finalTranscriptRef.current = [finalTranscriptRef.current, t].filter(Boolean).join(" ");
+        const combined = [baseTextRef.current, finalTranscriptRef.current]
+          .filter(Boolean)
+          .join(" ")
+          .trim();
+        setNewMessage(combined);
+      }
+      setIsListening(false);
+    };
+    stt.onError = (err) => {
+      console.error("[STT error]", err);
       toast({
         title: "Voice input error",
-        description,
+        description: err.message || "Streaming failed.",
         variant: "destructive",
       });
       setIsListening(false);
     };
 
-    recognition.onend = () => {
-      setIsListening(false);
-      // persist whatever is currently in the input; user can edit
-    };
-
     try {
-      recognition.start();
+      await stt.start();
       setIsListening(true);
-    } catch (err) {
-      console.error("Failed to start recognition", err);
+    } catch (err: any) {
+      console.error("Failed to start STT streamer", err);
+      toast({
+        title: "Voice input error",
+        description: err?.message || "Could not start microphone streaming.",
+        variant: "destructive",
+      });
+      setIsListening(false);
     }
   };
 
   const stopVoiceInput = () => {
     try {
-      recognitionRef.current?.stop?.();
+      sttRef.current?.stop();
     } catch {}
     setIsListening(false);
   };
