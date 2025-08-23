@@ -131,6 +131,7 @@ export class STTStreamer {
       if (typeof ev.data === 'string') {
         try {
           const msg: STTEvent = JSON.parse(ev.data);
+          // Support Vosk-style typed messages
           if (msg.type === 'ready') {
             if (msg.sampleRate && msg.sampleRate !== this.desiredSampleRate) {
               // The server expects 16k by default; keep client at 16k
@@ -143,6 +144,14 @@ export class STTStreamer {
             if (msg.text) this.onResult?.(msg.text);
           } else if (msg.type === 'final') {
             if (msg.text) this.onFinal?.(msg.text);
+          } else {
+            // Fallback: simple server payload without type, e.g. { text: "...", translated: "..." }
+            const anyMsg: any = msg as any;
+            if (typeof anyMsg.text === 'string' && anyMsg.text.length > 0) {
+              // Treat as a finalized segment
+              this.onResult?.(anyMsg.text);
+              this.onFinal?.(anyMsg.text);
+            }
           }
         } catch (e) {
           // ignore malformed
@@ -159,10 +168,10 @@ export class STTStreamer {
     });
   }
 
-  private downsampleBuffer(buffer: Float32Array, inSampleRate: number, outSampleRate: number): Int16Array {
+  private downsampleBuffer(buffer: Float32Array, inSampleRate: number, outSampleRate: number): Float32Array {
     if (outSampleRate === inSampleRate) {
-      // Direct convert float->int16
-      return this.floatTo16BitPCM(buffer);
+      // No resample needed; return original float data
+      return buffer;
     }
     const ratio = inSampleRate / outSampleRate;
     const newLength = Math.round(buffer.length / ratio);
@@ -181,7 +190,7 @@ export class STTStreamer {
       offsetResult++;
       offsetBuffer = nextOffsetBuffer;
     }
-    return this.floatTo16BitPCM(result);
+    return result;
   }
 
   private floatTo16BitPCM(input: Float32Array): Int16Array {

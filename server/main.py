@@ -4,14 +4,42 @@ import sys
 import asyncio
 import json
 import threading
-import mlx_whisper
+from typing import Optional
 import pyaudio
 import numpy as np
 import requests
+try:
+    import pyperclip  # optional
+except Exception:
+    pyperclip = None  # type: ignore
+from faster_whisper import WhisperModel
 
-# Model configuration
-# MODEL_NAME="mlx-community/whisper-large-v3-turbo"
-MODEL_NAME = "mlx-community/whisper-tiny"  # Smaller model for faster processing
+# Model configuration (CPU-friendly)
+# Sizes: "tiny", "base", "small", "medium", "large-v3". Use tiny/base for CPU.
+MODEL_NAME = "medium"
+
+# Global model (lazy init)
+_MODEL: Optional[WhisperModel] = None
+
+def get_model() -> WhisperModel:
+    global _MODEL
+    if _MODEL is None:
+        # On CPU, int8 or int8_float16 is fastest and memory-efficient
+        _MODEL = WhisperModel(MODEL_NAME, device="cpu", compute_type="int8")
+    return _MODEL
+
+def transcribe_f32_16k(audio: np.ndarray) -> str:
+    """Transcribe a mono float32 16kHz numpy array using faster-whisper and return lowercased text."""
+    if audio is None or audio.size == 0:
+        return ""
+    model = get_model()
+    segments, info = model.transcribe(audio, beam_size=1)
+    text_parts = []
+    for seg in segments:
+        # seg.text usually starts with a leading space
+        text_parts.append(seg.text)
+    text = ("".join(text_parts)).strip().lower()
+    return text
 
 # PyAudio configuration
 FORMAT = pyaudio.paInt16   # Audio format (16-bit int)
@@ -22,7 +50,7 @@ SILENCE_THRESHOLD = 500    # Amplitude threshold for detecting silence
 SILENCE_CHUNKS = 30        # Number of consecutive chunks of silence before stopping
 
 # WebSocket defaults
-WS_HOST = "100.127.47.73"
+WS_HOST = "0.0.0.0"
 WS_PORT = 8765
 
 def transcribe_audio(single_mode=False, interactive_mode=False, output_file=None, copy_to_clipboard=False):
@@ -62,11 +90,8 @@ def transcribe_audio(single_mode=False, interactive_mode=False, output_file=None
         if frames:
             audio_data = np.concatenate(frames)
 
-            # Process audio with mlx_whisper
-            result = mlx_whisper.transcribe(audio_data, path_or_hf_repo=MODEL_NAME)
-
-            # Get the transcribed text
-            transcription = result["text"].strip().lower()  # Normalize text for comparison
+            # Process audio with faster-whisper
+            transcription = transcribe_f32_16k(audio_data)
 
             # Output to stdout for piping
             if len(transcription) > 0:
@@ -81,6 +106,14 @@ def transcribe_audio(single_mode=False, interactive_mode=False, output_file=None
                     }
                 )
                 print(resp.json()['translatedText'])
+
+                # Copy transcription to the pasteboard if specified
+                if copy_to_clipboard and pyperclip is not None:
+                    try:
+                        pyperclip.copy(transcription)
+                        print("Text copied to pasteboard.", file=sys.stderr)  # Notify to stderr
+                    except Exception:
+                        pass
 
                 # Write transcription to file if specified
                 if output_file:
@@ -125,8 +158,7 @@ async def _server_transcribe_from_chunks(websocket):
                 if silent_chunks > SILENCE_CHUNKS:
                     if frames:
                         segment = np.concatenate(frames)
-                        result = mlx_whisper.transcribe(segment, path_or_hf_repo=MODEL_NAME)
-                        text = result.get("text", "").strip().lower()
+                        text = transcribe_f32_16k(segment)
                         translated = ""
                         if text:
                             try:
@@ -146,8 +178,7 @@ async def _server_transcribe_from_chunks(websocket):
                 cmd = (message or "").strip().lower()
                 if cmd == "eos" and frames:
                     segment = np.concatenate(frames)
-                    result = mlx_whisper.transcribe(segment, path_or_hf_repo=MODEL_NAME)
-                    text = result.get("text", "").strip().lower()
+                    text = transcribe_f32_16k(segment)
                     translated = ""
                     if text:
                         try:
@@ -194,8 +225,11 @@ async def ws_client_stream_mic(host: str = WS_HOST, port: int = WS_PORT, copy_to
                             print(text)
                         if translated:
                             print(translated)
-                        if copy_to_clipboard and text:
-                            pyperclip.copy(text)
+                        if copy_to_clipboard and text and pyperclip is not None:
+                            try:
+                                pyperclip.copy(text)
+                            except Exception:
+                                pass
                     except Exception as e:
                         print(f"[ws client] bad message: {e}", file=sys.stderr)
             except Exception as e:

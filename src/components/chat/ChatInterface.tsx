@@ -67,6 +67,7 @@ const ChatInterface = () => {
   const [isListening, setIsListening] = useState(false);
   const [hasSpeechSupport, setHasSpeechSupport] = useState(false);
   const sttRef = useRef<STTStreamer | null>(null);
+  const speechRef = useRef<any | null>(null);
   const baseTextRef = useRef<string>("");
   const accumulatedFinalRef = useRef<string>("");
   const finalTranscriptRef = useRef<string>("");
@@ -92,10 +93,11 @@ const ChatInterface = () => {
     }
   }, [user, selectedRoomId]);
 
-  // Detect microphone support and permission once
+  // Detect microphone/speech support and permission once
   useEffect(() => {
     const mediaSupported = !!navigator?.mediaDevices?.getUserMedia;
-    setHasSpeechSupport(mediaSupported);
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    setHasSpeechSupport(!!SpeechRecognition || mediaSupported);
     // Try to detect current microphone permission if supported
     try {
       const navAny = navigator as any;
@@ -117,9 +119,18 @@ const ChatInterface = () => {
       }
     } catch {}
     return () => {
-      // Cleanup: stop streamer if active
+      // Cleanup: stop streamer / speech if active
       try {
         sttRef.current?.stop();
+      } catch {}
+      try {
+        if (speechRef.current) {
+          speechRef.current.onresult = null;
+          speechRef.current.onerror = null;
+          speechRef.current.onend = null;
+          try { speechRef.current.stop(); } catch {}
+          speechRef.current = null;
+        }
       } catch {}
     };
   }, []);
@@ -308,41 +319,62 @@ const ChatInterface = () => {
     fi: "fi-FI",
   };
 
-  const ensureMicPermission = async (): Promise<boolean> => {
-    if (micPermission === "granted") return true;
-    if (!navigator?.mediaDevices?.getUserMedia) return true; // fallback; some browsers prompt on start
+  const startBrowserSpeech = async (): Promise<boolean> => {
+    const SR: any = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SR) return false;
     try {
-      setRequestingMic(true);
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      // Immediately stop tracks; we only needed permission
-      stream.getTracks().forEach((t) => t.stop());
-      setMicPermission("granted");
+      const permitted = await ensureMicPermission();
+      if (!permitted) return false;
+      const recog = new SR();
+      speechRef.current = recog;
+      recog.continuous = true;
+      recog.interimResults = true;
+      const langCode = SPEECH_LANGS[profile?.native_language || 'en'] || 'en-US';
+      recog.lang = langCode;
+
+      baseTextRef.current = newMessage;
+      accumulatedFinalRef.current = "";
+      finalTranscriptRef.current = "";
+      lastFinalIndexRef.current = -1;
+
+      recog.onresult = (event: any) => {
+        let interim = "";
+        for (let i = event.resultIndex; i < event.results.length; i++) {
+          const res = event.results[i];
+          if (res.isFinal) {
+            finalTranscriptRef.current = [finalTranscriptRef.current, res[0].transcript].filter(Boolean).join(" ");
+          } else {
+            interim = res[0].transcript;
+          }
+        }
+        const combined = [baseTextRef.current, finalTranscriptRef.current, interim].filter(Boolean).join(" ").trim();
+        setNewMessage(combined);
+      };
+
+      recog.onerror = (e: any) => {
+        console.error('[SpeechRecognition error]', e);
+        try { recog.stop(); } catch {}
+        speechRef.current = null;
+        // Fallback to WS streamer on error
+        startWSStreamerFallback();
+      };
+
+      recog.onend = () => {
+        // Stop listening when recognition naturally ends
+        setIsListening(false);
+      };
+
+      recog.start();
+      setIsListening(true);
       return true;
     } catch (e) {
-      setMicPermission("denied");
-      toast({
-        title: "Microphone blocked",
-        description: "Please allow microphone access in your browser settings to use voice input.",
-        variant: "destructive",
-      });
+      console.error('Failed to start SpeechRecognition', e);
       return false;
-    } finally {
-      setRequestingMic(false);
     }
   };
 
-  const startVoiceInput = async () => {
-    if (isListening) return;
-    const permitted = await ensureMicPermission();
-    if (!permitted) return;
-
-    // Snapshot current text so interim results append during this session
-    baseTextRef.current = newMessage;
-    accumulatedFinalRef.current = "";
-    finalTranscriptRef.current = "";
-    lastFinalIndexRef.current = -1;
-
-    const wsUrl = (import.meta as any).env?.VITE_STT_WS_URL || "ws://localhost:8001/ws";
+  const startWSStreamerFallback = async () => {
+    const wsUrl = (import.meta as any).env?.VITE_STT_WS_URL || "ws://100.127.47.73:8765";
     const stt = new STTStreamer(wsUrl);
     sttRef.current = stt;
 
@@ -350,7 +382,6 @@ const ChatInterface = () => {
       console.log("[STT ready]", info);
     };
     stt.onPartial = (t) => {
-      console.log("[STT partial]", t);
       const combined = [baseTextRef.current, finalTranscriptRef.current, t]
         .filter(Boolean)
         .join(" ")
@@ -358,7 +389,6 @@ const ChatInterface = () => {
       setNewMessage(combined);
     };
     stt.onResult = (t) => {
-      console.log("[STT result]", t);
       if (t) {
         finalTranscriptRef.current = [finalTranscriptRef.current, t].filter(Boolean).join(" ");
         const combined = [baseTextRef.current, finalTranscriptRef.current]
@@ -369,7 +399,6 @@ const ChatInterface = () => {
       }
     };
     stt.onFinal = (t) => {
-      console.log("[STT final]", t);
       if (t) {
         finalTranscriptRef.current = [finalTranscriptRef.current, t].filter(Boolean).join(" ");
         const combined = [baseTextRef.current, finalTranscriptRef.current]
@@ -404,9 +433,55 @@ const ChatInterface = () => {
     }
   };
 
+  const ensureMicPermission = async (): Promise<boolean> => {
+    if (micPermission === "granted") return true;
+    if (!navigator?.mediaDevices?.getUserMedia) return true; // fallback; some browsers prompt on start
+    try {
+      setRequestingMic(true);
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      // Immediately stop tracks; we only needed permission
+      stream.getTracks().forEach((t) => t.stop());
+      setMicPermission("granted");
+      return true;
+    } catch (e) {
+      setMicPermission("denied");
+      toast({
+        title: "Microphone blocked",
+        description: "Please allow microphone access in your browser settings to use voice input.",
+        variant: "destructive",
+      });
+      return false;
+    } finally {
+      setRequestingMic(false);
+    }
+  };
+
+  const startVoiceInput = async () => {
+    if (isListening) return;
+    // Try SpeechRecognition first; if unavailable or error, fallback to WS streamer
+    const startedSpeech = await startBrowserSpeech();
+    if (!startedSpeech) {
+      // Snapshot current text so interim results append during this session
+      baseTextRef.current = newMessage;
+      accumulatedFinalRef.current = "";
+      finalTranscriptRef.current = "";
+      lastFinalIndexRef.current = -1;
+      await startWSStreamerFallback();
+    }
+  };
+
   const stopVoiceInput = () => {
     try {
       sttRef.current?.stop();
+    } catch {}
+    try {
+      if (speechRef.current) {
+        speechRef.current.onresult = null;
+        speechRef.current.onerror = null;
+        speechRef.current.onend = null;
+        speechRef.current.stop();
+        speechRef.current = null;
+      }
     } catch {}
     setIsListening(false);
   };
@@ -749,7 +824,6 @@ const ChatInterface = () => {
                     disabled={loading || !selectedRoomId}
                     aria-pressed={isListening}
                     title={isListening ? "Stop voice input" : "Start voice input"}
-                  
                   >
                     {isListening ? <MicOff className="w-4 h-4 text-red-500" /> : <Mic className="w-4 h-4" />}
                   </Button>
